@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: merlottv-addon
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: TMDB_API_KEY
+        value: 5f35ed9740b3aca008e2b9349f5f6393
+      - key: PORT
+        value: 7000
