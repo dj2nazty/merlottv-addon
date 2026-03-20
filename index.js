@@ -122,11 +122,12 @@ const manifest = {
 // MDBList URL for Popular New TV Shows
 const MDBLIST_POPULAR_NEW_TV = 'https://mdblist.com/lists/garycrawfordgc/latest-tv-shows/json';
 
-// Helper: fetch MDBList and convert to Stremio metas
+// Helper: fetch MDBList and convert to Stremio metas (30 min cache)
+const MDBLIST_CACHE_TTL = 30 * 60 * 1000;
 async function fetchMdbList(url) {
     const cacheKey = `mdblist:${url}`;
-    const cached = getCached(cacheKey);
-    if (cached) return cached;
+    const entry = cache.get(cacheKey);
+    if (entry && (Date.now() - entry.ts < MDBLIST_CACHE_TTL)) return entry.data;
 
     const res = await fetch(url);
     if (!res.ok) throw new Error(`MDBList ${res.status}`);
@@ -321,10 +322,22 @@ app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
     }
 });
 
+// Pre-warm caches on startup so first requests are instant
+async function prewarm() {
+    try {
+        console.log('Pre-warming MDBList cache...');
+        await fetchMdbList(MDBLIST_POPULAR_NEW_TV);
+        console.log('MDBList cache warmed.');
+    } catch (e) {
+        console.error('MDBList pre-warm failed:', e.message);
+    }
+}
+
 // Only listen when running directly (not on Vercel serverless)
 if (!process.env.VERCEL) {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`MerlotTV+ TMDB Addon running at http://localhost:${PORT}/manifest.json`);
+        prewarm();
     });
 }
 
