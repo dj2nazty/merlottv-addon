@@ -93,6 +93,11 @@ const manifest = {
             id: 'merlot.top_rated_movies', type: 'movie', name: 'Top Rated Movies',
             extra: [{ name: 'genre', options: MOVIE_GENRES.map(g => g.name) }, { name: 'skip' }]
         },
+        // MDBList catalogs
+        {
+            id: 'merlot.popular_new_tvshows', type: 'series', name: 'Popular New TV Shows',
+            extra: [{ name: 'skip' }]
+        },
         // TV catalogs
         {
             id: 'merlot.airing_today', type: 'series', name: 'Airing Today',
@@ -113,6 +118,38 @@ const manifest = {
         }))
     ]
 };
+
+// MDBList URL for Popular New TV Shows
+const MDBLIST_POPULAR_NEW_TV = 'https://mdblist.com/lists/garycrawfordgc/latest-tv-shows/json';
+
+// Helper: fetch MDBList and convert to Stremio metas
+async function fetchMdbList(url) {
+    const cacheKey = `mdblist:${url}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`MDBList ${res.status}`);
+    const items = await res.json();
+
+    const metas = items
+        .filter(item => item.imdb_id)
+        .slice(0, 40) // Limit to top 40
+        .map(item => ({
+            id: item.imdb_id,
+            type: 'series',
+            name: item.title,
+            poster: item.poster ? item.poster : null,
+            background: item.backdrop ? item.backdrop : null,
+            posterShape: 'poster',
+            year: item.release_year ? String(item.release_year) : undefined,
+            description: item.description || '',
+            imdbRating: item.imdb_rating ? String(item.imdb_rating) : undefined,
+        }));
+
+    setCache(cacheKey, metas);
+    return metas;
+}
 
 // TMDB endpoint mapping
 const CATALOG_MAP = {
@@ -213,6 +250,12 @@ app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
 
         let results = [];
         let mediaType = type === 'series' ? 'tv' : 'movie';
+
+        // MDBList catalogs
+        if (id === 'merlot.popular_new_tvshows') {
+            const metas = await fetchMdbList(MDBLIST_POPULAR_NEW_TV);
+            return res.json({ metas });
+        }
 
         // Network catalogs
         if (id.startsWith('net.')) {
