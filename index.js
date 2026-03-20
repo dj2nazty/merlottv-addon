@@ -122,7 +122,25 @@ const manifest = {
 // MDBList URL for Popular New TV Shows
 const MDBLIST_POPULAR_NEW_TV = 'https://mdblist.com/lists/garycrawfordgc/latest-tv-shows/json';
 
-// Helper: fetch MDBList and convert to Stremio metas (30 min cache)
+// Helper: look up TMDB metadata by IMDB ID
+async function getTmdbMetaByImdb(imdbId) {
+    try {
+        const data = await tmdbFetch('/find/' + imdbId, { external_source: 'imdb_id' });
+        const result = (data.tv_results && data.tv_results[0]) || (data.movie_results && data.movie_results[0]);
+        if (!result) return null;
+        const isMovie = !!result.title;
+        return {
+            name: isMovie ? result.title : result.name,
+            poster: result.poster_path ? `${TMDB_IMG}/w500${result.poster_path}` : null,
+            background: result.backdrop_path ? `${TMDB_IMG}/w1280${result.backdrop_path}` : null,
+            description: result.overview || '',
+            imdbRating: result.vote_average ? result.vote_average.toFixed(1) : undefined,
+            year: (isMovie ? result.release_date : result.first_air_date || '').substring(0, 4),
+        };
+    } catch { return null; }
+}
+
+// Helper: fetch MDBList and enrich with TMDB metadata (30 min cache)
 const MDBLIST_CACHE_TTL = 30 * 60 * 1000;
 async function fetchMdbList(url) {
     const cacheKey = `mdblist:${url}`;
@@ -133,20 +151,29 @@ async function fetchMdbList(url) {
     if (!res.ok) throw new Error(`MDBList ${res.status}`);
     const items = await res.json();
 
-    const metas = items
-        .filter(item => item.imdb_id)
-        .slice(0, 40) // Limit to top 40
-        .map(item => ({
-            id: item.imdb_id,
-            type: 'series',
-            name: item.title,
-            poster: item.poster ? item.poster : null,
-            background: item.backdrop ? item.backdrop : null,
-            posterShape: 'poster',
-            year: item.release_year ? String(item.release_year) : undefined,
-            description: item.description || '',
-            imdbRating: item.imdb_rating ? String(item.imdb_rating) : undefined,
+    // Get IMDB IDs, limit to 25 to keep TMDB lookups fast
+    const withImdb = items.filter(item => item.imdb_id).slice(0, 25);
+
+    // Enrich with TMDB metadata in parallel (batches of 5)
+    const metas = [];
+    for (let i = 0; i < withImdb.length; i += 5) {
+        const batch = withImdb.slice(i, i + 5);
+        const results = await Promise.all(batch.map(async (item) => {
+            const tmdb = await getTmdbMetaByImdb(item.imdb_id);
+            return {
+                id: item.imdb_id,
+                type: 'series',
+                name: (tmdb && tmdb.name) || item.title,
+                poster: tmdb ? tmdb.poster : null,
+                background: tmdb ? tmdb.background : null,
+                posterShape: 'poster',
+                year: (tmdb && tmdb.year) || (item.release_year ? String(item.release_year) : undefined),
+                description: tmdb ? tmdb.description : '',
+                imdbRating: tmdb ? tmdb.imdbRating : undefined,
+            };
         }));
+        metas.push(...results.filter(m => m.poster)); // Only include items with posters
+    }
 
     setCache(cacheKey, metas);
     return metas;
