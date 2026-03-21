@@ -80,6 +80,31 @@ const manifest = {
     idPrefixes: ['tt'],
     resources: ['catalog'],
     catalogs: [
+        // Combined catalogs (TMDB + Cinemeta merged, deduped by IMDB ID)
+        {
+            id: 'merlot.popular_movies', type: 'movie', name: 'Popular Movies',
+            extra: [{ name: 'skip' }]
+        },
+        {
+            id: 'merlot.popular_series', type: 'series', name: 'Popular Series',
+            extra: [{ name: 'skip' }]
+        },
+        {
+            id: 'merlot.new_movies', type: 'movie', name: 'New Movies',
+            extra: [{ name: 'skip' }]
+        },
+        {
+            id: 'merlot.new_series', type: 'series', name: 'New Series',
+            extra: [{ name: 'skip' }]
+        },
+        {
+            id: 'merlot.featured_movies', type: 'movie', name: 'Featured Movies',
+            extra: [{ name: 'skip' }]
+        },
+        {
+            id: 'merlot.featured_series', type: 'series', name: 'Featured Series',
+            extra: [{ name: 'skip' }]
+        },
         // Movie catalogs
         {
             id: 'merlot.upcoming', type: 'movie', name: 'Upcoming Movies',
@@ -178,6 +203,63 @@ async function fetchMdbList(url) {
     setCache(cacheKey, metas);
     return metas;
 }
+
+// Helper: fetch Cinemeta catalog and return Stremio metas
+const CINEMETA_BASE = 'https://v3-cinemeta.strem.io';
+async function fetchCinemeta(type, catalogId) {
+    const cacheKey = `cinemeta:${type}:${catalogId}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+
+    try {
+        const url = `${CINEMETA_BASE}/catalog/${type}/${catalogId}.json`;
+        const res = await fetch(url, { timeout: 8000 });
+        if (!res.ok) return [];
+        const data = await res.json();
+        const metas = (data.metas || []).map(m => ({
+            id: m.imdb_id || m.id,
+            type: m.type || type,
+            name: m.name,
+            poster: m.poster || null,
+            background: m.background || null,
+            posterShape: 'poster',
+            year: m.year || (m.releaseInfo || '').substring(0, 4) || undefined,
+            description: m.description || '',
+            imdbRating: m.imdbRating || undefined,
+        })).filter(m => m.id && m.id.startsWith('tt'));
+        setCache(cacheKey, metas);
+        return metas;
+    } catch {
+        return [];
+    }
+}
+
+// Helper: merge two meta arrays, dedup by IMDB ID, prefer best poster
+function mergeMetas(a, b) {
+    const map = new Map();
+    for (const m of [...a, ...b]) {
+        const existing = map.get(m.id);
+        if (!existing) {
+            map.set(m.id, m);
+        } else {
+            // Keep the one with better metadata
+            const score = (item) =>
+                (item.poster ? 2 : 0) + (item.background ? 1 : 0) + (item.description ? 1 : 0);
+            if (score(m) > score(existing)) map.set(m.id, m);
+        }
+    }
+    return [...map.values()];
+}
+
+// Combined catalog definitions: TMDB endpoint + Cinemeta catalog ID
+const COMBINED_CATALOGS = {
+    'merlot.popular_movies':   { tmdb: '/movie/popular',   tmdbType: 'movie',  cinemeta: { type: 'movie',  id: 'top' } },
+    'merlot.popular_series':   { tmdb: '/tv/popular',      tmdbType: 'tv',     cinemeta: { type: 'series', id: 'top' } },
+    'merlot.new_movies':       { tmdb: '/movie/now_playing', tmdbType: 'movie', cinemeta: { type: 'movie',  id: 'year' } },
+    'merlot.new_series':       { tmdb: '/tv/on_the_air',   tmdbType: 'tv',     cinemeta: { type: 'series', id: 'year' } },
+    'merlot.featured_movies':  { tmdb: '/movie/top_rated',  tmdbType: 'movie', cinemeta: { type: 'movie',  id: 'imdbRating' } },
+    'merlot.featured_series':  { tmdb: '/tv/top_rated',     tmdbType: 'tv',    cinemeta: { type: 'series', id: 'imdbRating' } },
+};
 
 // TMDB endpoint mapping
 const CATALOG_MAP = {
@@ -278,6 +360,22 @@ app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
 
         let results = [];
         let mediaType = type === 'series' ? 'tv' : 'movie';
+
+        // Combined catalogs (TMDB + Cinemeta merged)
+        if (COMBINED_CATALOGS[id]) {
+            const combo = COMBINED_CATALOGS[id];
+            const page = extra.skip ? Math.floor(parseInt(extra.skip) / 20) + 1 : 1;
+
+            // Fetch both sources in parallel
+            const [tmdbData, cinemetaMetas] = await Promise.all([
+                tmdbFetch(combo.tmdb, { page: page.toString() }).catch(() => ({ results: [] })),
+                fetchCinemeta(combo.cinemeta.type, combo.cinemeta.id)
+            ]);
+
+            const tmdbMetas = await toStremioMetas(tmdbData.results || [], combo.tmdbType);
+            const merged = mergeMetas(tmdbMetas, cinemetaMetas);
+            return res.json({ metas: merged });
+        }
 
         // MDBList catalogs
         if (id === 'merlot.popular_new_tvshows') {
